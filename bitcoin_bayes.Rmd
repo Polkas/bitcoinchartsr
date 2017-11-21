@@ -1,0 +1,335 @@
+---
+title: "Bitcoin prices across different cyryptocurrency markets"
+author: "Maciej Nasinski"
+date: "November 8, 2017"
+fontsize: 11pt
+output: 
+  pdf_document:
+    toc: false
+---
+
+```{r setup, include=FALSE,message=F}
+options(scipen = 999)
+
+knitr::opts_chunk$set(echo = F,message=F,warning=F,cache = T)
+
+pacman::p_load(rvest,
+               tidyverse,
+               stringr,
+               lubridate,
+               data.table,
+               doParallel,
+               scales,
+               Hmisc,
+               MSBVAR,
+               ggthemes,
+               rjags)
+
+```
+
+
+##Executive Summary
+
+There is no a one particular pattern across all examined Bitcoin markets. It was observed two significant scenarios, positive and negative mean spillovers - i.e. some Bitcoin markets influence positively/negatively future returns at other markets. This results provide some evidence of an cryptomarkets inefficiency. It is very probable that it is a first research on this subject. Further steps will be to add a GARCH component to examine volatile spillovers.
+
+##Intro
+
+```{r}
+#Most important steps of the statistical modeling process are:
+
+#Problem -> Understanding -> Gather Data -> Explore -> Modeling -> Validation -> Implementation
+```
+
+In this research it will be investigated price mean spillover across Bitcoin markets. It will be used Bayesian statistics methodology to assess if prices at certain market are influenced by other markets. The aspect of currency is not important in this analysis so it were used only US dollar denominated markets. There was used a Bayesian version of VAR (Vector Autoregression) model which provides clear solution for analyzing mean spillover across markets.  
+
+Why VAR model was chosen? VAR is one of the most popular tool for exploring multi-equations models. Additionally in accordance with literature this model could be improved by adding variance of errors (GARCH) enabling examination of volatility spillovers. 
+[**(Abidin&others,2015)**](http://ro.uow.edu.au/cgi/viewcontent.cgi?article=1515&context=aabfj) [**(Zhang&others,2008)**](https://www.sciencedirect.com/science/article/pii/S0161893808000197) [**(Beirne&others,2010)**](https://www.sciencedirect.com/science/article/pii/S1566014110000282)
+What is difference between frequentist and Bayesian VAR model.  It allows for a more general specification and can produce a tractable multivariate normal posterior distribution. A consequence is that the estimation of the VAR coefficients is no longer done on an equation-by-equation basis as in the reduced form version. Instead, we estimate the parameters for the full system in a multivariate regression. [**(Brandt&others,2006)**](http://www.utdallas.edu/~pbrandt/Patrick_Brandts_Website/Replication_files/BrandtFreeman-2006-PA.pdf)
+
+
+Database was built from data offered by [**bitcoincharts**](https://bitcoincharts.com). First of all there was downloaded files in [**csv.gz**](http://api.bitcoincharts.com/v1/csv/) format which contain quotes from active USD Bitcoin markets. Procedure assume that csv files are frequently update so if files are change re-run of script will cause downloading of files with a new upload time-stamp. The certain csv file contains all transactions from a particular bitcoin market at specific time frame. There are 3 attributes describing each file - time-stamp,price and volume of every transaction. This files could be merged and/or aggregate by time-stamp. Aggregating could be helpful because of the big size of decompressed files but at expense of lossing information. Data could be aggregate by every minute,hour or day. Data aggregation with 1 hour interval was implemented. Then statistics like mean,max.min,first and/or last price was evaluated.
+
+\newpage
+
+##Data
+
+[**blockexplorer**](https://blockexplorer.com/b/100000) is an API which allows downloading information from certain blocks. It could be used to gather all bitcoin transactions by web scarping subsequent blocks. However it is much faster and easier to use data already downloaded which are offered for free on the Internet.
+
+[**bitcoincharts**](https://bitcoincharts.com/markets/currency/USD.html) summarize prices on most important markets.
+At the same website we are able to find database of csv files of historic prices on different markets. Some markets are update constantly others with few months delay.
+
+
+```{r,cache=F}
+markets_raw <- read_html("http://api.bitcoincharts.com/v1/csv/") 
+
+markets = markets_raw %>%
+    html_nodes("a") %>%
+    html_text() 
+  
+dates_m = markets_raw %>%
+    html_nodes(xpath="/html/body/pre/text()") %>%
+    html_text() %>%
+    str_extract("\\d\\d-[a-zA-z].+-\\d\\d\\d\\d \\d\\d:\\d\\d")
+
+
+###Active Markets
+active_m = read_html("https://bitcoincharts.com/markets/list/") %>%
+     html_nodes("body > div.container_16.content.padding > div > div.grid_7.alpha > ul:nth-child(59)") %>% #USD
+     #PLN html_nodes("body > div.container_16.content.padding > div > div.grid_7.alpha > ul:nth-child(47)") %>%
+     html_nodes("a") %>%
+     html_text()
+sub = gsub(".csv.gz","",markets) %in% active_m
+markets_sub = markets[sub]
+dates_m_sub = as.Date(strftime(dmy_hm(dates_m[sub]),"%Y-%m-%d"))
+
+###Downloading
+
+files_ls = list.files(paste0("~/bitcoinDB/"))
+for(i in seq_along(markets_sub)){
+pos = str_detect(files_ls,markets_sub[i])
+file_name_old = files_ls[pos]
+file_name_new = paste0(dates_m_sub[i],"_",markets_sub[i])
+if( (!any(pos))){
+download.file(paste0("http://api.bitcoincharts.com/v1/csv/",markets_sub[i]),
+paste0("~/bitcoinDB/",file_name_new))
+} else if( any(pos) & as.Date(strsplit(files_ls[pos],"_")[[1]][1]) < as.Date(dates_m_sub[i])){
+system(paste0("bash | rm /mnt/c/Users/user/Documents/bitcoinDB/",file_name_old))
+download.file(paste0("http://api.bitcoincharts.com/v1/csv/",markets_sub[i]),
+paste0("~/bitcoinDB/",file_name_new))
+} 
+} 
+
+###Delete old files after update
+
+for(i in seq_along(markets_sub)){
+  
+  pos = str_detect(markets_sub,strsplit(files_ls[i],"_")[[1]][2])
+  if(!any(pos)) system(paste0("bash | rm /mnt/c/Users/user/Documents/bitcoinDB/",files_ls[i]))
+  
+}
+```
+
+
+```{r,cache=F}
+###File size
+s = file.info(paste0("C:/Users/user/Documents/bitcoinDB/",list.files("C:/Users/user/Documents/bitcoinDB/")))
+s_size = s$size
+names(s_size) = basename(rownames(s))
+
+markets = list.files("C:/Users/user/Documents/bitcoinDB/")
+
+markets = markets[!markets %in% basename(rownames(s))[s$size<1000]]
+
+markets_nam = markets %>% 
+  str_replace_all("USD.csv.gz","") %>%
+  strsplit("_")
+
+markets_nam = do.call(rbind,markets_nam)[,2]
+
+```
+
+
+
+```{r,cache=T}
+###Binding
+
+cl <- makePSOCKcluster(7)
+doParallel::registerDoParallel(cl)
+bitcoin_merged = foreach(i = 1:length(markets),.combine = "rbind") %dopar%
+{
+my_data = readr::read_csv(paste0("C:/Users/user/Documents/bitcoinDB/",markets[i]),col_names = c("time","price","vol"),col_types =  "idd") 
+my_data$name = markets_nam[i]
+my_data$time = as.POSIXct(my_data$time,origin = "1970-01-01")
+my_data
+}
+
+stopCluster(cl)
+
+
+###Merging
+
+#bitcoin_merged$vol_g = Hmisc::cut2(bitcoin_merged$vol,c(0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,20,50,100,1000))
+
+bitcoin_agg = data.table(bitcoin_merged)
+bitcoin_agg  = bitcoin_agg[,.(
+  #price_max=max(price,na.rm=T),
+  #price_min = min(price,na.rm=T),
+  #price_mean = mean(price,na.rm=T),
+  price_first = first(price),
+  price_last = last(price)),
+  #vol_sum = sum(vol,na.rm=T),
+  #vol_max = max(vol,na.rm=T)),
+  by=list(time_YmdH =  floor_date(time,"hour"),name)]
+
+bitcoin_agg[,ret_fl := (log(price_last)-log(price_first)),by=list(name)]
+
+bitcoin_spread = dcast(bitcoin_agg[,.(time_YmdH,name,ret_fl)],time_YmdH ~ name,value.var="ret_fl")
+```
+
+
+```{r}
+###Deleting markets with hidg NA ratio
+
+low_NA = colnames(bitcoin_spread)[sort(apply(bitcoin_spread,2,function(x) sum(is.na(x))/length(x)),index.return=T)$ix[1:7]]
+
+bitcoin_spread = na.omit(bitcoin_spread[,low_NA,with=F])
+
+dat = bitcoin_agg[time_YmdH>=min(bitcoin_spread$time_YmdH) & time_YmdH<max(bitcoin_spread$time_YmdH) & name %in% low_NA,,][order(time_YmdH)]
+
+```
+
+
+In most cases it is much easier to analyse returns not prices because of stationarity of a former. Example of a stationary process is the white noise process which probability distribution does not changed during time. The returns are calculated as log difference between first and last transaction price at a specific hour.
+List of six active and most volatile USD Bitcoin markets: `r toupper(low_NA[-1])`
+
+
+```{r,fig.height=6,fig.width=6}
+
+g1 = ggplot(dat,
+       aes(x=time_YmdH,y=price_last,color=name))  + 
+    ggthemes::theme_tufte()+
+  geom_line() + 
+  scale_x_datetime(breaks = date_breaks("3 month"),labels = date_format("%Y-%m")) +
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
+  facet_wrap(~name,scales = "free",ncol=2) + 
+  ggtitle("Bitcoin prices at active and most volatile Bitcoin markets")
+
+g2 = ggplot(dat,
+       aes(x=time_YmdH,y=ret_fl,color=name))  + 
+      ggthemes::theme_tufte()+
+  geom_line() + 
+  scale_x_datetime(breaks = date_breaks("3 month"),labels = date_format("%Y-%m")) +
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
+  facet_wrap(~name,scales = "free",ncol=2) + 
+  labs(title = "Bitcoin returns at active and most volatile Bitcoin markets - by hour") 
+#g1
+g2
+
+```
+
+##Estimation
+
+There was used rJAGS and MSBVAR (offers Bayesian approach for VAR models) packages. Latter package was implement to validate results from JAGS simulation.
+Every variable is described by p lags of their own and all others variables. If a variable which represents other market is significant then there is mean spillover effect - some market influence other market prices.
+
+Structural:
+
+$$ A_0y + A_+X = E $$
+
+
+Reduce form:
+
+$$y_t = c + B_1*y_{t-1} + B_2*y_{t-1} + ... + B_p*y_{t-p} + u_t$$
+
+where:
+
+$$ B_l = A_0^{-1} * A_l \text{    and    } u_t = A_0^{-1} * \epsilon_t $$
+
+Example of one of tested JAGS models:
+
+```{r,echo=T}
+mod_string = "
+data { D <- dim(Z) } 
+model { 
+for (i in 3:D[1]) { 
+for (j in 1:D[2]){
+Z[i,j] ~ dnorm(mu[i,j], prec[j])
+mu[i,j] = b[1:6,j] %*% Z[i-1,1:6] + b[7:12,j] %*% Z[i-2,1:6] + b[13,j]
+}
+}
+for (j in 1:D[2]){
+for (i in 1:(2*D[2]+1)){
+b[i,j] ~ dnorm(0.0, 1.0/1.0e6)
+}
+prec[j] ~ dgamma(1.0/2.0, 1.0*1/2.0)
+sig2[j] = 1.0 / prec[j]
+sig[j] = sqrt(sig2[j])
+}}"
+```
+
+
+```{r}
+#Coefficients and significance[^1]:
+
+bitcoin_spread_ts = ts(bitcoin_spread[,-1],start = 1,frequency = 1) 
+nams = colnames(bitcoin_spread[,-1]) 
+BVAR = MSBVAR::szbvar(bitcoin_spread_ts,
+                      p=2,
+                      z=NULL,
+                      lambda0=0.1, 
+                      lambda1=0.1,
+                      lambda3=1, 
+                      lambda4=0.1, 
+                      lambda5=0.1, 
+                      mu5=0,
+                      mu6=0, 
+                      nu=7, 
+                      qm=4,
+                      prior=2, 
+                      posterior.fit=F)
+
+
+coef = BVAR$Bhat
+coef_sd = sqrt(diag(BVAR$vcv.Bh))
+pval = 2 * pt(abs(coef/coef_sd), nrow(bitcoin_spread_ts) - ncol(bitcoin_spread_ts),lower.tail = FALSE)
+
+
+tabs = matrix(paste0(round(coef,3),ifelse(pval<0.001,"***",ifelse(pval<0.01,"**",ifelse(pval<0.1,"*","")))),nrow(coef),ncol(coef))
+colnames(tabs) = nams
+rownames(tabs) = c(paste0(nams,"_lag1"),paste0(nams,"_lag2"),"intercept")
+#knitr::kable(tabs)
+```
+
+[^1]: where \*,\*\*,\*\*\* is respectively 0.1,0.01,0.001 significance level
+
+
+```{r}
+Z = list(Z = as.matrix(bitcoin_spread[,-1]))
+
+params = c("b")
+
+mod = jags.model(textConnection(mod_string), data=Z, n.chains=3,quiet=T)
+update(mod, 50) # burn-in
+
+mod_sim = coda.samples(model=mod,
+                       variable.names=params,
+                       n.iter=500)
+
+mod_csim = do.call(rbind, mod_sim) # combine multiple chains
+```
+
+\newpage
+
+Final parameters was chosen in accordance with MSE criteria and MCMC chain characteristics.
+
+Model with two lags was used and uninformative normal and gamma priors (value for variance of returns equal one is huge).
+
+Every tested model has (nr_lag\*6\+1)\*6 coefficients, so for two lags there are 78 of them. It is very hard to vizualize properties of final model so you have to belife that it passed all diag tests from the coda package. 
+
+```{r}
+
+```
+
+
+Bayesian approach probability that coefficient is smaller/larger than 0, it is calculated as mean of boolen values (0/1) which was calculated form chain for certain coefficient :
+
+```{r}
+bigger = apply(mod_csim,2,function(x) mean(x>0))
+smaller = apply(mod_csim,2,function(x) mean(x<0) )
+
+res_bay = matrix(paste0(round(smaller,2),"/",round(bigger,2),ifelse(round(bigger,2)>0.9|round(smaller,2)>0.9,"!!!","")),nrow(coef),ncol(coef))
+colnames(res_bay) = nams
+rownames(res_bay) = c(paste0(nams,"_lag1"),paste0(nams,"_lag2"),"intercept")
+knitr::kable(res_bay)
+
+```
+
+Important relations (p>90%) was highlighted by three exclamation marks (!!!) 
+
+```{r}
+tab_res = data.frame(impact = as.vector(apply(res_bay,2,function(x) paste(rownames(res_bay)[grepl("!!!",x)],collapse=" "))) , on = c("bitstamp","localbtc","itbit","hitbtc","cex","rock"))
+knitr::kable(tab_res)
+```
+
+
+We could observe that there are a few mean spillover effects. This discovery suggested that there could exists a bitcoin market ineffciency. However It will be advisable to perform further examination on this subject. The main reason why arbitrage dont stabilize prices across markets could be high costs of implementing it.
