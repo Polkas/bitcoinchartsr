@@ -77,62 +77,77 @@ bitcoin_merged = foreach(i = 1:length(markets_sub),.combine = "rbind") %dopar%
                      error= function(e) data.frame(time=NA,price=NA,vol=NA))
   
   my_data$name = gsub(".csv.gz","",markets_sub[i])
-  my_data$time = as.POSIXct(my_data$time,origin = "1970-01-01")
   my_data
 }
 stopCluster(cl)
 
-saveRDS(bitcoin_merged,paste0("bitcoinUSD_",Sys.Date(),".Rds"))
+bitcoin_merged$name = factor(bitcoin_merged$name)
 
-#bitcoin_merged = readRDS("bitcoinUSD_2018-05-12.Rds")
+#saveRDS(bitcoin_merged,paste0("bitcoinUSD_",Sys.Date(),".Rds"))
+
+#bitcoin_merged = readRDS("bitcoinUSD_2018-05-14.Rds")
+
 
 ###Aggregating - to x interval
 setDT(bitcoin_merged)
 
-bitcoin_agg  = bitcoin_merged[,c('time_YmdH') := list(lubridate::floor_date(time,"hour"))] %>%
+bitcoin_merged[,c('ymd_hm','ymd_h'):=list(as.POSIXct(time-time%%60,origin="1970-01-01"),as.POSIXct(time-time%%(60*60),origin="1970-01-01"))]
+
+bitcoin_agg  = bitcoin_merged %>%
   .[,.(
-  #price_max=max(price,na.rm=T),
-  #price_min = min(price,na.rm=T),
+  price_max=max(price,na.rm=T),
+  price_min = min(price,na.rm=T),
   price_mean = mean(price,na.rm=T),
+  price_median = median(price,na.rm=T),
   price_first = first(price),
   price_last = last(price),
-  vol_sum = sum(vol,na.rm=T)),
-  #vol_max = max(vol,na.rm=T)),
-  by=list(name,time_YmdH)]
+  vol_sum = sum(vol,na.rm=T),
+  vol_max = max(vol,na.rm=T)),
+  by=list(name,ymd_h)]
 
-bitcoin_agg[,ret_fl := (log(price_last)-log(price_first)),by=list(name)]
+bitcoin_agg[,ret_median := (log(price_median)-lag(log(price_median))),by=list(name)]
 
-rm(bitcoin_merged)
+#rm(bitcoin_merged)
 
-bitcoin_spread = dcast(bitcoin_agg[,.(time_YmdH,name,ret_fl)],time_YmdH ~ name,value.var="ret_fl")
+bitcoin_spread = data.table::dcast(bitcoin_agg[,.(ymd_h,name,ret_median)],ymd_h ~ name,value.var="ret_median")
 
 ###Deleting markets with high NA ratio
 
-low_NA = colnames(bitcoin_spread)[sort(apply(bitcoin_spread,2,function(x) sum(is.na(x))/length(x)),index.return=T)$ix[1:7]]
+low_NA = colnames(sort(bitcoin_spread[,lapply(.SD,function(x) sum(is.na(x))/length(x))]))[1:5]
 
 #bitcoin_spread = na.omit(bitcoin_spread[,low_NA,with=F])
 
-frams = bitcoin_agg[name %in% low_NA,.(min_t=min(time_YmdH),max_t=max(time_YmdH)),by=.(name)][,.(min=max(min_t),max=min(max_t))]
+frams = bitcoin_agg[name %in% low_NA,.(min_t=min(ymd_h),max_t=max(ymd_h)),by=.(name)][,.(min=max(min_t),max=min(max_t))]
 
-dat = bitcoin_agg[time_YmdH>=frams$min & time_YmdH<frams$max & name %in% low_NA,,][order(time_YmdH)]
+dat = bitcoin_agg[ymd_h>=frams$min & ymd_h<frams$max & name %in% low_NA,,][order(ymd_h)]
 
 g1 = ggplot(dat,
-            aes(x=time_YmdH,y=price_mean,color=name))  + 
+            aes(x=ymd_h,y=price_median,col=name))  + 
   ggthemes::theme_tufte()+
-  geom_line(size=2) + 
-  scale_x_datetime(breaks = date_breaks("3 month"),labels = date_format("%Y-%m")) +
+  geom_point(size=1,alpha=0.1) + 
+  scale_x_datetime(breaks = date_breaks("6 month"),labels = date_format("%Y-%m")) +
   theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
-  facet_wrap(~name,scales = "free",ncol=2) + 
-  ggtitle("Bitcoin prices at active and most volatile Bitcoin USD markets - by hour")
+  facet_wrap(~name,scales = "fix",ncol=2) + 
+  ggtitle("Bitcoin prices at most volatile Bitcoin USD markets \n 1 hour interval")
 
 g2 = ggplot(dat,
-            aes(x=time_YmdH,y=ret_fl,color=name))  + 
+            aes(x=ymd_h,y=ret_median,col=name))  + 
   ggthemes::theme_tufte()+
-  geom_line(size=2) + 
-  scale_x_datetime(breaks = date_breaks("3 month"),labels = date_format("%Y-%m")) +
+  geom_point(size=1,alpha=0.3) + 
+  scale_x_datetime(breaks = date_breaks("6 month"),labels = date_format("%Y-%m")) +
   theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
   facet_wrap(~name,scales = "free",ncol=2) + 
-  labs(title = "Bitcoin returns at active and most volatile Bitcoin USD markets - by hour") 
+  labs(title = "Bitcoin returns at most volatile Bitcoin USD markets \n 1 hour interval - free scale") 
 
-ggsave(g1,"Prices_USD.png")
-ggsave(g2,"Returns_USD.png")
+g3 = ggplot(dat,
+            aes(x=ymd_h,y=vol_sum,col=name))  + 
+  ggthemes::theme_tufte()+
+  geom_point(size=1,alpha=0.1) + 
+  scale_x_datetime(breaks = date_breaks("6 month"),labels = date_format("%Y-%m")) +
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
+  facet_wrap(~name,scales = "free",ncol=2) + 
+  ggtitle("Bitcoin volume at most volatile Bitcoin USD markets \n 1 hour interval - free scale")
+
+ggsave("./png/Prices_USD.png",g1)
+ggsave("./png/Returns_USD.png",g2)
+ggsave("./png/Volume_USD.png",g3)
