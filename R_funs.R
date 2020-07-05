@@ -83,12 +83,15 @@ stopCluster(cl)
 
 bitcoin_merged$name = factor(bitcoin_merged$name)
 
-saveRDS(bitcoin_merged,paste0("bitcoinUSD_",Sys.Date(),".Rds"))
+#saveRDS(bitcoin_merged,"bitcoinUSD.Rds")
 
 #bitcoin_merged = readRDS("bitcoinUSD_2018-05-14.Rds")
 
 
 ###Aggregating - to x interval
+
+#bitcoin_merged = readRDS('bitcoinUSD.Rds')
+
 setDT(bitcoin_merged)
 
 bitcoin_merged[,c('ymd_hm','ymd_h'):=list(as.POSIXct(time-time%%60,origin="1970-01-01"),as.POSIXct(time-time%%(60*60),origin="1970-01-01"))]
