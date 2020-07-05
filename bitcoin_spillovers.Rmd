@@ -25,14 +25,15 @@ pacman::p_load(rvest,
                ggthemes,
                rjags)
 
+updating = FALSE
 ```
 
 
-##Executive Summary
+## Executive Summary
 
 There is no a one particular pattern across all examined Bitcoin markets. It was observed two significant scenarios, positive and negative mean spillovers - i.e. some Bitcoin markets influence positively/negatively future returns at other markets. This results provide some evidence of an cryptomarkets inefficiency. It is very probable that it is a first research on this subject. Further steps will be to add a GARCH component to examine volatile spillovers.
 
-##Intro
+## Intro
 
 ```{r}
 #Most important steps of the statistical modeling process are:
@@ -51,7 +52,7 @@ Database was built from data offered by [**bitcoincharts**](https://bitcoinchart
 
 \newpage
 
-##Data
+## Data
 
 [**blockexplorer**](https://blockexplorer.com/b/100000) is an API which allows downloading information from certain blocks. It could be used to gather all bitcoin transactions by web scarping subsequent blocks. However it is much faster and easier to use data already downloaded which are offered for free on the Internet.
 
@@ -59,134 +60,106 @@ Database was built from data offered by [**bitcoincharts**](https://bitcoinchart
 At the same website we are able to find database of csv files of historic prices on different markets. Some markets are update constantly others with few months delay.
 
 
-```{r,cache=F}
+```{r, eval = FALSE}
+csvs = function(){
+
 markets_raw <- read_html("http://api.bitcoincharts.com/v1/csv/") 
 
-markets = markets_raw %>%
-    html_nodes("a") %>%
-    html_text() 
-  
-dates_m = markets_raw %>%
-    html_nodes(xpath="/html/body/pre/text()") %>%
-    html_text() %>%
-    str_extract("\\d\\d-[a-zA-z].+-\\d\\d\\d\\d \\d\\d:\\d\\d")
+csv_markets = markets_raw %>%
+  html_nodes("a") %>%
+  html_text() 
 
+csv_dates = markets_raw %>%
+  html_nodes(xpath="/html/body/pre/text()") %>%
+  html_text() %>%
+  str_extract("\\d\\d-[a-zA-z].+-\\d\\d\\d\\d \\d\\d:\\d\\d")
 
-###Active Markets
-active_m = read_html("https://bitcoincharts.com/markets/list/") %>%
-     html_nodes("body > div.container_16.content.padding > div > div.grid_7.alpha > ul:nth-child(59)") %>% #USD
-     #PLN html_nodes("body > div.container_16.content.padding > div > div.grid_7.alpha > ul:nth-child(47)") %>%
-     html_nodes("a") %>%
-     html_text()
-sub = gsub(".csv.gz","",markets) %in% active_m
-markets_sub = markets[sub]
-dates_m_sub = as.Date(strftime(dmy_hm(dates_m[sub]),"%Y-%m-%d"))
-```
-
-
-```{r}
-###Downloading
-
-files_ls = list.files(paste0("~/bitcoinDB/"))
-for(i in seq_along(markets_sub)){
-pos = str_detect(files_ls,markets_sub[i])
-file_name_old = files_ls[pos]
-file_name_new = paste0(dates_m_sub[i],"_",markets_sub[i])
-if( (!any(pos))){
-download.file(paste0("http://api.bitcoincharts.com/v1/csv/",markets_sub[i]),
-paste0("~/bitcoinDB/",file_name_new))
-} else if( any(pos) & as.Date(strsplit(files_ls[pos],"_")[[1]][1]) < as.Date(dates_m_sub[i])){
-system(paste0("bash | rm /mnt/c/Users/user/Documents/bitcoinDB/",file_name_old))
-download.file(paste0("http://api.bitcoincharts.com/v1/csv/",markets_sub[i]),
-paste0("~/bitcoinDB/",file_name_new))
-} 
-} 
-
-###Delete old files after update
-
-for(i in seq_along(markets_sub)){
-  
-  pos = str_detect(markets_sub,strsplit(files_ls[i],"_")[[1]][2])
-  if(!any(pos)) system(paste0("bash | rm /mnt/c/Users/user/Documents/bitcoinDB/",files_ls[i]))
+tibble(csv_dates,csv_markets)
   
 }
-```
 
 
-```{r,cache=F}
-###File size
-s = file.info(paste0("C:/Users/user/Documents/bitcoinDB/",list.files("C:/Users/user/Documents/bitcoinDB/")))
-s_size = s$size
-names(s_size) = basename(rownames(s))
+###Active Markets List
 
-markets = list.files("C:/Users/user/Documents/bitcoinDB/")
+active_markets = function(){
+  
+  a_markets=read_html("https://bitcoincharts.com/markets/list/") %>%
+    html_nodes("body > div.container_16.content.padding > div > div.grid_7.alpha > ul") %>% html_text() %>% str_replace_all("\\n","") %>% str_replace_all("\\s+"," ") %>% str_trim()
+  a_currency = read_html("https://bitcoincharts.com/markets/list/") %>%
+    html_nodes("body > div.container_16.content.padding > div > div.grid_7.alpha > h3") %>% html_text()
+  
+  clean_nams = function(x) gsub(")$","",trimws(unlist(str_split(x,"\\(|\\)\\s"))))
+  by_pos = function(x,by,pos) x[seq(pos,length(x),by)]
+  
+  DF = tibble(a_currency,a_markets) %>% rowwise()  %>% mutate(nam1=list(by_pos(clean_nams(a_markets),2,1)),nam2=list(by_pos(clean_nams(a_markets),2,2)))
+  
+  DF
+  
+}
 
-markets = markets[!markets %in% basename(rownames(s))[s$size<1000]]
+active_m = active_markets() %>% filter(grepl("USD",a_currency))
 
-markets_nam = markets %>% 
-  str_replace_all("USD.csv.gz","") %>%
-  strsplit("_")
-
-markets_nam = do.call(rbind,markets_nam)[,2]
-
-```
+csv_files = csvs()
+sub = gsub(".csv.gz","",csv_files$csv_markets) %in% unlist(active_m$nam1)
+markets_sub = csv_files$csv_markets[sub]
 
 
 
-```{r}
-###Binding
-
-cl <- makePSOCKcluster(7)
+cl <- makePSOCKcluster(max(parallel::detectCores()-1,1))
 doParallel::registerDoParallel(cl)
-bitcoin_merged = foreach(i = 1:length(markets),.combine = "rbind") %dopar%
+bitcoin_merged = foreach(i = 1:length(markets_sub),.combine = "rbind") %dopar%
 {
-my_data = readr::read_csv(paste0("C:/Users/user/Documents/bitcoinDB/",markets[i]),col_names = c("time","price","vol"),col_types =  "idd") 
-my_data$name = markets_nam[i]
-my_data$time = as.POSIXct(my_data$time,origin = "1970-01-01")
-my_data
+  my_data = tryCatch(readr::read_csv(paste0("http://api.bitcoincharts.com/v1/csv/",markets_sub[i]),col_names = c("time","price","vol"),col_types =  "idd"),
+                     error= function(e) data.frame(time=NA,price=NA,vol=NA))
+  
+  my_data$name = gsub(".csv.gz","",markets_sub[i])
+  my_data
 }
-
 stopCluster(cl)
+
+bitcoin_merged$name = factor(bitcoin_merged$name)
+
+saveRDS(bitcoin_merged,paste0("bitcoinUSD.Rds"))
 ```
 
 
 ```{r}
-###Merging
 
-#bitcoin_merged$vol_g = Hmisc::cut2(bitcoin_merged$vol,c(0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,20,50,100,1000))
+bitcoin_merged = readRDS("bitcoinUSD.Rds")
 
-bitcoin_agg = data.table(bitcoin_merged)
-bitcoin_agg  = bitcoin_agg[,.(
-  #price_max=max(price,na.rm=T),
-  #price_min = min(price,na.rm=T),
-  #price_mean = mean(price,na.rm=T),
+setDT(bitcoin_merged)
+
+bitcoin_merged[,c('ymd_hm','ymd_h'):=list(as.POSIXct(time-time%%60,origin="1970-01-01"),as.POSIXct(time-time%%(60*60),origin="1970-01-01"))]
+
+bitcoin_agg  = bitcoin_merged %>%
+  .[,.(
+  price_max=max(price,na.rm=T),
+  price_min = min(price,na.rm=T),
+  price_mean = mean(price,na.rm=T),
+  price_median = median(price,na.rm=T),
   price_first = first(price),
   price_last = last(price),
-  vol_sum = sum(vol,na.rm=T)),
-  #vol_max = max(vol,na.rm=T)),
-  by=list(time_YmdH =  floor_date(time,"minute"),name)]
+  vol_sum = sum(vol,na.rm=T),
+  vol_max = max(vol,na.rm=T)),
+  by=list(name,ymd_h)]
 
-bitcoin_agg[,ret_fl := (log(price_last)-log(price_first)),by=list(name)]
+bitcoin_agg[,ret_median := (log(price_median)-lag(log(price_median))),by=list(name)]
 
-rm(bitcoin_merged)
-```
+#rm(bitcoin_merged)
 
+bitcoin_spread = data.table::dcast(bitcoin_agg[,.(ymd_h,name,ret_median)],ymd_h ~ name,value.var="ret_median")
 
-```{r}
-bitcoin_spread = dcast(bitcoin_agg[,.(time_YmdH,name,ret_fl)],time_YmdH ~ name,value.var="ret_fl")
-```
+###Deleting markets with high NA ratio
 
-
-```{r}
-###Deleting markets with hidg NA ratio
-
-low_NA = colnames(bitcoin_spread)[sort(apply(bitcoin_spread,2,function(x) sum(is.na(x))/length(x)),index.return=T)$ix[1:7]]
+low_NA = colnames(sort(bitcoin_spread[,lapply(.SD,function(x) sum(is.na(x))/length(x))]))[1:5]
 
 bitcoin_spread = na.omit(bitcoin_spread[,low_NA,with=F])
 
-dat = bitcoin_agg[time_YmdH>=min(bitcoin_spread$time_YmdH) & time_YmdH<max(bitcoin_spread$time_YmdH) & name %in% low_NA,,][order(time_YmdH)]
+frams = bitcoin_agg[name %in% low_NA,.(min_t=min(ymd_h),max_t=max(ymd_h)),by=.(name)][,.(min=max(min_t),max=min(max_t))]
 
+dat = bitcoin_agg[ymd_h>=frams$min & ymd_h<frams$max & name %in% low_NA,,][order(ymd_h)]
 ```
+
 
 
 In most cases it is much easier to analyse returns not prices because of stationarity of a former. Example of a stationary process is the white noise process which probability distribution does not changed during time. The returns are calculated as log difference between first and last transaction price at a specific hour.
@@ -196,37 +169,37 @@ List of six active and most volatile USD Bitcoin markets: `r toupper(low_NA[-1])
 ```{r,fig.height=6,fig.width=6}
 
 g1 = ggplot(dat,
-       aes(x=time_YmdH,y=price_last,color=name))  + 
-    ggthemes::theme_tufte()+
-  geom_line() + 
-  scale_x_datetime(breaks = date_breaks("3 month"),labels = date_format("%Y-%m")) +
+            aes(x=ymd_h,y=price_median,col=name))  + 
+  ggthemes::theme_tufte()+
+  geom_point(size=1,alpha=0.1) + 
+  scale_x_datetime(breaks = date_breaks("6 month"),labels = date_format("%Y-%m")) +
   theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
-  facet_wrap(~name,scales = "free",ncol=2) + 
-  ggtitle("Bitcoin prices at active and most volatile Bitcoin markets")
+  facet_wrap(~name,scales = "fix",ncol=2) + 
+  ggtitle("Bitcoin prices at most volatile Bitcoin USD markets \n 1 hour interval")
 
 g2 = ggplot(dat,
-       aes(x=time_YmdH,y=ret_fl,color=name))  + 
-      ggthemes::theme_tufte()+
-  geom_line() + 
-  scale_x_datetime(breaks = date_breaks("3 month"),labels = date_format("%Y-%m")) +
+            aes(x=ymd_h,y=ret_median,col=name))  + 
+  ggthemes::theme_tufte()+
+  geom_point(size=1,alpha=0.3) + 
+  scale_x_datetime(breaks = date_breaks("6 month"),labels = date_format("%Y-%m")) +
   theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
   facet_wrap(~name,scales = "free",ncol=2) + 
-  labs(title = "Bitcoin returns at active and most volatile Bitcoin markets - by hour") 
+  labs(title = "Bitcoin returns at most volatile Bitcoin USD markets \n 1 hour interval - free scale") 
 
-ggplot(dat,
-       aes(x=time_YmdH,y=ret_fl,color=name))  + 
-    ggthemes::theme_tufte()+
-    geom_line() + 
-    scale_x_datetime(breaks = date_breaks("3 month"),labels = date_format("%Y-%m")) +
-    theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
-    facet_wrap(~name,scales = "free",ncol=2) + 
-    labs(title = "Bitcoin returns at active and most volatile Bitcoin markets - by hour") 
+g3 = ggplot(dat,
+            aes(x=ymd_h,y=vol_sum,col=name))  + 
+  ggthemes::theme_tufte()+
+  geom_point(size=1,alpha=0.1) + 
+  scale_x_datetime(breaks = date_breaks("6 month"),labels = date_format("%Y-%m")) +
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5)) +
+  facet_wrap(~name,scales = "free",ncol=2) + 
+  ggtitle("Bitcoin volume at most volatile Bitcoin USD markets \n 1 hour interval - free scale")
 
 g2
 
 ```
 
-##Estimation
+## Estimation
 
 There was used rJAGS and MSBVAR (offers Bayesian approach for VAR models) packages. Latter package was implement to validate results from JAGS simulation.
 Every variable is described by p lags of their own and all others variables. If a variable which represents other market is significant then there is mean spillover effect - some market influence other market prices.
@@ -247,32 +220,6 @@ $$ B_l = A_0^{-1} * A_l \text{    and    } u_t = A_0^{-1} * \epsilon_t $$
 ```{r}
 #Coefficients and significance[^1]:
 
-bitcoin_spread_ts = ts(bitcoin_spread[,-1],start = 1,frequency = 1) 
-nams = colnames(bitcoin_spread[,-1]) 
-BVAR = MSBVAR::szbvar(bitcoin_spread_ts,
-                      p=2,
-                      z=NULL,
-                      lambda0=0.1, 
-                      lambda1=0.1,
-                      lambda3=1, 
-                      lambda4=0.1, 
-                      lambda5=0.1, 
-                      mu5=0,
-                      mu6=0, 
-                      nu=7, 
-                      qm=4,
-                      prior=2, 
-                      posterior.fit=F)
-
-
-coef = BVAR$Bhat
-coef_sd = sqrt(diag(BVAR$vcv.Bh))
-pval = 2 * pt(abs(coef/coef_sd), nrow(bitcoin_spread_ts) - ncol(bitcoin_spread_ts),lower.tail = FALSE)
-
-
-tabs = matrix(paste0(round(coef,3),ifelse(pval<0.001,"***",ifelse(pval<0.01,"**",ifelse(pval<0.1,"*","")))),nrow(coef),ncol(coef))
-colnames(tabs) = nams
-rownames(tabs) = c(paste0(nams,"_lag1"),paste0(nams,"_lag2"),"intercept")
 #knitr::kable(tabs)
 ```
 
@@ -280,13 +227,14 @@ rownames(tabs) = c(paste0(nams,"_lag1"),paste0(nams,"_lag2"),"intercept")
 
 
 ```{r}
+
 mod_string = "
 data { D <- dim(Z) } 
 model { 
 for (i in 3:D[1]) { 
 for (j in 1:D[2]){
 Z[i,j] ~ dnorm(mu[i,j], prec[j])
-mu[i,j] = b[1:6,j] %*% Z[i-1,1:6] + b[7:12,j] %*% Z[i-2,1:6] + b[13,j]
+mu[i,j] = b[1:4,j] %*% Z[i-1,1:4] + b[5:8,j] %*% Z[i-2,1:4] + b[9,j]
 }
 }
 for (j in 1:D[2]){
@@ -297,11 +245,12 @@ prec[j] ~ dgamma(1.0/2.0, 1.0*1/2.0)
 sig2[j] = 1.0 / prec[j]
 sig[j] = sqrt(sig2[j])
 }}"
-Z = list(Z = as.matrix(bitcoin_spread[,-1]))
+Z = list(Z = as.matrix(bitcoin_spread[bitcoin_spread$ymd_h>=as.Date("2018-01-01"),-1]))
 
 params = c("b")
 
 mod = jags.model(textConnection(mod_string), data=Z, n.chains=3,quiet=T)
+
 update(mod, 50) # burn-in
 
 mod_sim = coda.samples(model=mod,
@@ -324,18 +273,20 @@ Bayesian approach probability that coefficient is smaller/larger than 0, it is c
 ```{r}
 bigger = apply(mod_csim,2,function(x) mean(x>0))
 smaller = apply(mod_csim,2,function(x) mean(x<0) )
+coef = apply(mod_csim,2,function(x) mean(x) )
 
-res_bay = matrix(paste0(round(smaller,2),"/",round(bigger,2),ifelse(round(bigger,2)>0.9|round(smaller,2)>0.9,"!!!","")),nrow(coef),ncol(coef))
-colnames(res_bay) = nams
-rownames(res_bay) = c(paste0(nams,"_lag1"),paste0(nams,"_lag2"),"intercept")
-knitr::kable(res_bay)
+nams = colnames(bitcoin_spread)[-1]
+res_bay = matrix(paste0(round(smaller,2),"/",round(bigger,2),ifelse(round(bigger,2)>0.9|round(smaller,2)>0.9,"!!!","")),length(nams),length(nams)*2+1)
+rownames(res_bay) = nams
+colnames(res_bay) = c(paste0(nams,"_lag1"),paste0(nams,"_lag2"),"intercept")
+knitr::kable(t(res_bay))
 
 ```
 
 Important relations (p>90%) was highlighted by three exclamation marks (!!!) 
 
 ```{r}
-tab_res = data.frame(impact = as.vector(apply(res_bay,2,function(x) paste(rownames(res_bay)[grepl("!!!",x)],collapse=" "))) , on = c("bitstamp","localbtc","itbit","hitbtc","cex","rock"))
+tab_res = data.frame(impact = as.vector(apply(res_bay,1,function(x) paste(colnames(res_bay)[grepl("!!!",x)],collapse=" "))) , on =nams)
 knitr::kable(tab_res)
 ```
 

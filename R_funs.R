@@ -83,7 +83,7 @@ stopCluster(cl)
 
 bitcoin_merged$name = factor(bitcoin_merged$name)
 
-#saveRDS(bitcoin_merged,paste0("bitcoinUSD_",Sys.Date(),".Rds"))
+saveRDS(bitcoin_merged,paste0("bitcoinUSD_",Sys.Date(),".Rds"))
 
 #bitcoin_merged = readRDS("bitcoinUSD_2018-05-14.Rds")
 
