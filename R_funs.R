@@ -154,3 +154,22 @@ g3 = ggplot(dat,
 ggsave("./png/Prices_USD.png",g1)
 ggsave("./png/Returns_USD.png",g2)
 ggsave("./png/Volume_USD.png",g3)
+
+#######
+                                              
+ss = summary(lm(Ozone~.,airquality))
+
+ss
+
+summary_bayes = function(ll){
+  
+  summr <- ll$coefficients
+  summr <- cbind(summr,`P(b<0)`=round(apply(ll$coefficients,1,function(x)  pt(-x[1]/x[2], ll$df[2])),6))
+  summr <- cbind(summr,`P(b>0)`=round(apply(ll$coefficients,1,function(x)  1 - pt(-x[1]/x[2], ll$df[2])),6))
+  summr
+  
+}
+
+summary_bayes(ss)
+
+1 - pt((1-1.89578642)/0.2738869, ss$df[2])
